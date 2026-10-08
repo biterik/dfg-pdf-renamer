@@ -1,0 +1,81 @@
+# Builds the Windows .exe and the macOS .app and attaches them to a GitHub
+# release.  Triggered by pushing a version tag:
+#
+#     git tag v1.0.0
+#     git push origin v1.0.0
+#
+# (The tag should match VERSION in dfg_pdf_renamer.py.)
+# "workflow_dispatch" additionally allows a manual test run from the Actions
+# tab; that run only produces downloadable artifacts, no release.
+
+name: Build and release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # needed to create the release
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            label: Windows
+          - os: macos-latest          # Apple Silicon (M1/M2/M3/...)
+            label: macOS-AppleSilicon
+          - os: macos-15-intel        # Intel Macs.  Remove this entry if the
+            label: macOS-Intel        # runner label is no longer offered.
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pyinstaller
+
+      - name: Run tests
+        run: python -m unittest discover tests
+
+      - name: Build Windows exe
+        if: runner.os == 'Windows'
+        run: |
+          pyinstaller --onefile --windowed --name DFG-PDF-Umbenenner dfg_pdf_renamer.py
+          mkdir upload
+          move dist\DFG-PDF-Umbenenner.exe upload\DFG-PDF-Umbenenner-Windows.exe
+
+      - name: Build macOS app
+        if: runner.os == 'macOS'
+        run: |
+          pyinstaller --windowed --name DFG-PDF-Umbenenner dfg_pdf_renamer.py
+          mkdir upload
+          ditto -c -k --keepParent dist/DFG-PDF-Umbenenner.app "upload/DFG-PDF-Umbenenner-${{ matrix.label }}.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.label }}
+          path: upload/*
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: upload
+          merge-multiple: true
+
+      - name: Create GitHub release with the binaries
+        uses: softprops/action-gh-release@v2
+        with:
+          files: upload/*
+          generate_release_notes: true
